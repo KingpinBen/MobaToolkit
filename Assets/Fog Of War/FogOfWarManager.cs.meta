@@ -1,0 +1,13 @@
+fileFormatVersion: 2
+guid: 940063b72b3fe474290e633644b26fe3
+timeCreated: 1435618371
+licenseType: Free
+MonoImporter:
+  serializedVersion: 2
+  defaultReferences:
+  - _fogBlurMaterial: {fileID: 2100000, guid: 42a3c0339d79cce4e9518fbd6cfb1c92, type: 2}
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
