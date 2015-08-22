@@ -22,14 +22,18 @@ namespace Fog
         private FogOfWarManager _target;
         private GameplayArea _gameplayArea;
         private FogDataAsset _dataAsset;
+        private string _errorMessage;
+        private State _currentState = State.Idle;
+        private EditorJob _currentJob;
+        private FogOfWarProbeData[] _tempProbeData;
 
         private const float cSphereCastRadius = .1f;
         private const float cMaxProbeRayDistance = 50.0f;
 
+
         private void OnEnable()
         {
             _target = target as FogOfWarManager;
-            
 
             _probeMaskProperty = serializedObject.FindProperty("probeableLayers");
             _ignoreMaskProperty = serializedObject.FindProperty("ignoredLayers");
@@ -38,15 +42,13 @@ namespace Fog
 
             _groundLayer    = LayerMask.NameToLayer("Ground");
             _LoSBlockLayer  = LayerMask.NameToLayer("SightBlock");
+            _currentState = State.Idle;
 
             TryFindFogDataAsset();
-
         }
 
         public override void OnInspectorGUI()
         {
-            //base.OnInspectorGUI();
-
             EditorGUILayout.PropertyField(_probeMaskProperty);
             EditorGUILayout.PropertyField(_ignoreMaskProperty);
 
@@ -57,32 +59,48 @@ namespace Fog
             if (GUI.changed)
                 TryFindFogDataAsset();
 
-            if (_dataAsset)
+            GUI.enabled = !EditorApplication.isPlaying && _dataAsset && _currentState == State.Idle;
+            DrawDebugGUI();
+
+            if (GUILayout.Button("Generate Vision Probes"))
             {
-                DrawDebugGUI();
-
-                if (GUILayout.Button("Generate Vision Probes"))
+                if (EditorApplication.isPlaying)
                 {
-                    TryFindFogDataAsset();
-                    _dataAsset.SetData(GenerateProbeData());
+                    _errorMessage = "Cannot generate probes while in playmode.";
+                }
+                else
+                {
+                    var result = EditorUtility.DisplayDialog("Probe Generation", 
+                        "Are you sure you want to generate probes? This may take some time.", "Yes", "No");
 
-                    ////  Grab the data field from the target and set the new probe data (if any, otherwise null)
-                    //var type = _target.GetType();
-                    //var dataField = type.GetField("_data", BindingFlags.NonPublic | BindingFlags.Instance);
+                    if (result)
+                    {
+                        _errorMessage = null;
+                        TryFindFogDataAsset();
 
-                    //dataField.SetValue(_target, probeData);
+                        _currentJob = EditorJob.Start(GenerateProbeData());
 
-                    //  Force a clean up
-                    GC.Collect();
+                        //  Force a clean up
+                        GC.Collect();
+                    }
                 }
             }
-            
+
+            GUI.enabled = true;
+
+            if (!string.IsNullOrEmpty(_errorMessage))
+                EditorGUILayout.HelpBox(_errorMessage, MessageType.Error);
 
             serializedObject.ApplyModifiedProperties();
         }
 
-        private void FindProbeNeighbours(FogOfWarProbeData[] probeData)
+        private IEnumerator FindProbeNeighbours()
         {
+            if (_currentState != State.GeneratingProbes)
+                yield break;
+
+            _currentState = State.LinkingNeighbours;
+
             Vector3 temp = Vector3.zero;
             Vector3 temp2 = Vector3.zero;
             RaycastHit hit;
@@ -94,16 +112,16 @@ namespace Fog
             int j;
 
             var testCollider = GameObject.CreatePrimitive(PrimitiveType.Sphere).GetComponent<SphereCollider>();
+            testCollider.hideFlags = HideFlags.HideAndDontSave;
             testCollider.radius = .2f;
 
             //  We add a rigidbody as we may check through some triggers 
             //  which need to block line of sight
             testCollider.gameObject.AddComponent<Rigidbody>();
 
-            for (int i = 0; i < probeData.Length; i++)
+            for (int i = 0; i < _tempProbeData.Length; i++)
             {
-                temp = new Vector3(probeData[i].x, 20, probeData[i].z);
-                
+                temp = new Vector3(_tempProbeData[i].x, 20, _tempProbeData[i].z);
 
                 visibleNodes.Clear();
 
@@ -121,15 +139,15 @@ namespace Fog
 
                     ray.origin = temp;
 
-                    for (j = 0; j < probeData.Length; j++)
+                    for (j = 0; j < _tempProbeData.Length; j++)
                     {
                         //  Skip if it's checking itself
-                        if (probeData[i].x == probeData[j].x && 
-                            probeData[i].z == probeData[j].z)
+                        if (_tempProbeData[i].x == _tempProbeData[j].x &&
+                            _tempProbeData[i].z == _tempProbeData[j].z)
                             continue;
 
-                        temp2.x = probeData[j].x;
-                        temp2.z = probeData[j].z;
+                        temp2.x = _tempProbeData[j].x;
+                        temp2.z = _tempProbeData[j].z;
 
                         /*  
                         //  The reason we move the collider instead of setting the position to the probe is 
@@ -139,7 +157,6 @@ namespace Fog
                         testCollider.transform.position = temp2;
                         ray.direction = (testCollider.transform.position - temp).normalized;
 
-                        
                         if (Physics.Raycast(ray, out hit, cMaxProbeRayDistance, ~_target.ignoredLayers.value))
                         {
                             if (hit.collider == testCollider)
@@ -147,14 +164,16 @@ namespace Fog
                         }
                     }
 
-                    probeData[i].visibleProbesIndices = visibleNodes.ToArray();
+                    _tempProbeData[i].visibleProbesIndices = visibleNodes.ToArray();
                 }
+
+                yield return null;
             }
 
             DestroyImmediate(testCollider.gameObject);
         }
 
-        private FogOfWarProbeData[] GenerateProbeData()
+        private IEnumerator GenerateProbeData()
         {
             if (!_gameplayArea)
                 throw new UnityException("FOGOFWARMANAGER::GENERATEPROBEDATA::NO_GAMEPLAY_AREA_SET");
@@ -165,18 +184,24 @@ namespace Fog
             if (_LoSBlockLayer == -1)
                 throw new UnityException("FOGOFWARMANAGER::GENERATEPROBEDATA::NO_SIGHTBLOCK_LAYER_EXISTS");
 
+            if (_currentState != State.Idle)
+                yield break;
+
             float x;
             RaycastHit hit;
-            Vector3 rayOrigin = Vector3.zero;
-            Dictionary<Point, FogOfWarProbeData> wData = new Dictionary<Point, FogOfWarProbeData>();
+            var rayOrigin = Vector3.zero;
+            var wData = new Dictionary<Point, FogOfWarProbeData>();
             var bottomLeftGameplayArea  = _gameplayArea.transform.position - (new Vector3(_gameplayArea.Size, 0, _gameplayArea.Size) * .5f);
             var topRightGameplayArea    = _gameplayArea.transform.position + (new Vector3(_gameplayArea.Size, 0, _gameplayArea.Size) * .5f);
 
+            _tempProbeData = null;
             rayOrigin.y = 20;
+            _currentState = State.GeneratingProbes;
+            EditorApplication.update += UpdateState;
 
-            for (float z = bottomLeftGameplayArea.z; z < topRightGameplayArea.z; z += FogOfWarManager.cProbeSpacing)
+            for (float z = bottomLeftGameplayArea.z + cSphereCastRadius; z < topRightGameplayArea.z; z += FogOfWarManager.cProbeSpacing)
             {
-                for (x = bottomLeftGameplayArea.x; x < topRightGameplayArea.x; x += FogOfWarManager.cProbeSpacing)
+                for (x = bottomLeftGameplayArea.x + cSphereCastRadius; x < topRightGameplayArea.x; x += FogOfWarManager.cProbeSpacing)
                 {
                     rayOrigin.x = x;
                     rayOrigin.z = z;
@@ -195,23 +220,22 @@ namespace Fog
                         }
                     }
                 }
+
+                yield return null;
             }
 
-            FogOfWarProbeData[] result = new FogOfWarProbeData[wData.Keys.Count];
-            wData.Values.CopyTo(result, 0);
+            _tempProbeData = new FogOfWarProbeData[wData.Keys.Count];
+            wData.Values.CopyTo(_tempProbeData, 0);
 
-            if (result == null || result.Length == 0)
+            if (_tempProbeData == null || _tempProbeData.Length == 0)
             {
                 Debug.Log("No probe data was created.");
-                return null;
             }
-
-            Debug.Log(string.Format("Created {0} probes", result.Length));
-            FindProbeNeighbours(result);
-
-            return result;
-
-            //return workingData.ToArray();
+            else
+            {
+                Debug.Log(string.Format("Created {0} probes", _tempProbeData.Length));
+                FindProbeNeighbours();
+            }            
         }
 
         private void DrawDebugGUI()
@@ -284,7 +308,7 @@ namespace Fog
                 }
 
                 Handles.SphereCap(0, v, Quaternion.identity, 0.5f);
-                Handles.RectangleCap(0, v, upQuat, FogOfWarManager.cProbeSpacing *.5f);
+                Handles.RectangleCap(0, v, upQuat, 0.5f);
             }
 
             Vector3 indexed = new Vector3(_dataAsset.Data[_debugIndex].x, 1.5f, _dataAsset.Data[_debugIndex].z);
@@ -315,6 +339,35 @@ namespace Fog
                 return;
 
             _dataAsset = _assetProperty.objectReferenceValue as FogDataAsset;
+        }
+
+        private void UpdateState()
+        {
+            if (_currentState == State.GeneratingProbes)
+            {
+                if (_currentJob.Finished)
+                {
+                    _currentJob = EditorJob.Start(FindProbeNeighbours());
+                }
+            }
+            else
+            {
+                if (_currentState == State.LinkingNeighbours)
+                {
+                    if (_currentJob.Finished)
+                    {
+                        _currentState = State.Idle;
+                        _dataAsset.SetData(_tempProbeData);
+                    }
+                }
+            }
+        }
+
+        private enum State
+        {
+            Idle,
+            GeneratingProbes,
+            LinkingNeighbours
         }
     }
 }
