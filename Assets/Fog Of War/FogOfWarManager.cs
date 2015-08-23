@@ -184,12 +184,10 @@ namespace Fog
                         }
                     }
 
-                    yield return null;
+                    
                 }
-
+                yield return null;
                 Render();
-
-                
             }
         }
 
@@ -266,11 +264,13 @@ namespace Fog
                 tempRT = rt2;
             }
 
+            
             //  Copy the now blurred temporary RT onto our object RT
             //  so the minimap (and others) can use it
             Graphics.Blit(tempRT, _fogRT);
 
             Shader.SetGlobalTexture(_fogShaderVariableName, _fogRT);
+            RenderTexture.ReleaseTemporary(tempRT);
         }
 
         private static FogOfWarManager _instance;
