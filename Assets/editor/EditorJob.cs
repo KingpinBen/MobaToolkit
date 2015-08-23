@@ -1,26 +1,27 @@
 ﻿using UnityEngine;
 using System.Collections;
 using UnityEditor;
+using System.Collections.Generic;
 
-public sealed class EditorJob
+public class EditorJob<T> 
 {
-    private readonly IEnumerator _coroutine;
-    private bool _inProgress;
+    protected readonly IEnumerator<T> _coroutine;
+    protected bool _inProgress;
 
-    private EditorJob(IEnumerator coroutine)
+    protected EditorJob(IEnumerator<T> coroutine)
     {
         _coroutine = coroutine; 
         EditorApplication.update += Update;
         _inProgress = true;
     }
 
-    private void Stop()
+    public virtual void Stop()
     {
-        EditorApplication.update -= Update;
         _inProgress = false;
+        EditorApplication.update -= Update;
     }
 
-    private void Update()
+    protected virtual void Update()
     {
         if (!_coroutine.MoveNext())
             Stop();
@@ -31,8 +32,43 @@ public sealed class EditorJob
         get { return !_inProgress; }
     }
 
-    public static EditorJob Start(IEnumerator ienumerator)
+    public static EditorJob<T> Start(IEnumerator<T> ienumerator)
     {
-        return new EditorJob(ienumerator);
+        return new EditorJob<T>(ienumerator);
+    }
+}
+
+public sealed class EditorProgressJob : EditorJob<float>
+{
+    private float _progressResult;
+
+    private EditorProgressJob(IEnumerator<float> coroutine)
+        : base(coroutine)
+    {
+        _progressResult = 0;
+    }
+
+    public override void Stop()
+    {
+        base.Stop();
+        _progressResult = 1.0f;
+    }
+
+    protected override void Update()
+    {
+        base.Update();
+
+        if (_inProgress)
+            _progressResult = _coroutine.Current;
+    }
+
+    public float Progress
+    {
+        get { return _progressResult; }
+    }
+
+    public static new EditorProgressJob Start(IEnumerator<float> ienumerator)
+    {
+        return new EditorProgressJob(ienumerator);
     }
 }
