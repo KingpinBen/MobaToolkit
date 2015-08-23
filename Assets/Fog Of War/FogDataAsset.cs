@@ -20,7 +20,7 @@ public sealed class FogDataAsset : ScriptableObject
     public void SetData(Fog.FogOfWarProbeData[] newData)
     {
         Debug.Assert(newData != null);
-
+        
         _probeData = newData;
     }
 #endif
