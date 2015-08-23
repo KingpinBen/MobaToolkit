@@ -155,6 +155,8 @@ namespace Fog
                     }
                 }
 
+                //  Repaint for the progress bar
+                Repaint();
                 yield return ((z - bottomLeftGameplayArea.z) / ((topRightGameplayArea.z - bottomLeftGameplayArea.z) + (topRightGameplayArea.x - bottomLeftGameplayArea.x)));
             }
 
@@ -248,6 +250,8 @@ namespace Fog
                     _tempProbeData[i].visibleProbesIndices = visibleNodes.ToArray();
                 }
 
+                //  Repaint for the progress bar
+                Repaint();
                 yield return ((i * 1.0f) / _tempProbeData.Length);
             }
 
