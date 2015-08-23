@@ -24,12 +24,11 @@ namespace Fog
         private FogDataAsset _dataAsset;
         private string _errorMessage;
         private State _currentState = State.Idle;
-        private EditorJob _currentJob;
+        private EditorProgressJob _currentJob;
         private FogOfWarProbeData[] _tempProbeData;
 
         private const float cSphereCastRadius = .1f;
         private const float cMaxProbeRayDistance = 50.0f;
-
 
         private void OnEnable()
         {
@@ -45,6 +44,14 @@ namespace Fog
             _currentState = State.Idle;
 
             TryFindFogDataAsset();
+        }
+
+        private void OnDisable()
+        {
+            EditorApplication.update -= UpdateState;
+            _tempProbeData = null;
+            _currentJob = null;
+            _currentState = State.Idle;
         }
 
         public override void OnInspectorGUI()
@@ -78,7 +85,7 @@ namespace Fog
                         _errorMessage = null;
                         TryFindFogDataAsset();
 
-                        _currentJob = EditorJob.Start(GenerateProbeData());
+                        _currentJob = EditorProgressJob.Start(GenerateProbeData());
 
                         //  Force a clean up
                         GC.Collect();
@@ -88,92 +95,15 @@ namespace Fog
 
             GUI.enabled = true;
 
+            VisionProbeGenerationProgressBar();
+
             if (!string.IsNullOrEmpty(_errorMessage))
                 EditorGUILayout.HelpBox(_errorMessage, MessageType.Error);
 
             serializedObject.ApplyModifiedProperties();
         }
 
-        private IEnumerator FindProbeNeighbours()
-        {
-            if (_currentState != State.GeneratingProbes)
-                yield break;
-
-            _currentState = State.LinkingNeighbours;
-
-            Vector3 temp = Vector3.zero;
-            Vector3 temp2 = Vector3.zero;
-            RaycastHit hit;
-            Ray ray = new Ray();
-
-            //  We use a List here as clearing a BetterList doesn't probably remove
-            //  visible probes from previously checked probes
-            List<int> visibleNodes = new List<int>();
-            int j;
-
-            var testCollider = GameObject.CreatePrimitive(PrimitiveType.Sphere).GetComponent<SphereCollider>();
-            testCollider.hideFlags = HideFlags.HideAndDontSave;
-            testCollider.radius = .2f;
-
-            //  We add a rigidbody as we may check through some triggers 
-            //  which need to block line of sight
-            testCollider.gameObject.AddComponent<Rigidbody>();
-
-            for (int i = 0; i < _tempProbeData.Length; i++)
-            {
-                temp = new Vector3(_tempProbeData[i].x, 20, _tempProbeData[i].z);
-
-                visibleNodes.Clear();
-
-                /*  
-                //  This is basically to just hit the ground to see where we can see from. 
-                //  It's a nice thing to have as we're able to get probes that can look down over edges
-                //  but not be able to look up, sort of like someone being able to look over a cliff.
-
-                //  If you don't want this effect just remove/comment-out this ray cast
-                */
-                if (Physics.Raycast(temp, Vector3.down, out hit))
-                {
-                    temp.y  = hit.point.y + .1f;
-                    temp2.y = hit.point.y + .1f;
-
-                    ray.origin = temp;
-
-                    for (j = 0; j < _tempProbeData.Length; j++)
-                    {
-                        //  Skip if it's checking itself
-                        if (_tempProbeData[i].x == _tempProbeData[j].x &&
-                            _tempProbeData[i].z == _tempProbeData[j].z)
-                            continue;
-
-                        temp2.x = _tempProbeData[j].x;
-                        temp2.z = _tempProbeData[j].z;
-
-                        /*  
-                        //  The reason we move the collider instead of setting the position to the probe is 
-                        //  so that the cast works properly when we encounter grass. This way, we can't look in
-                        //  (unless inside the grass) but are able to look out
-                        */
-                        testCollider.transform.position = temp2;
-                        ray.direction = (testCollider.transform.position - temp).normalized;
-
-                        if (Physics.Raycast(ray, out hit, cMaxProbeRayDistance, ~_target.ignoredLayers.value))
-                        {
-                            if (hit.collider == testCollider)
-                                visibleNodes.Add(j);
-                        }
-                    }
-
-                    _tempProbeData[i].visibleProbesIndices = visibleNodes.ToArray();
-                }
-
-                yield return null;
-            }
-
-            DestroyImmediate(testCollider.gameObject);
-        }
-
-        private IEnumerator GenerateProbeData()
+        private IEnumerator<float> GenerateProbeData()
         {
             if (!_gameplayArea)
                 throw new UnityException("FOGOFWARMANAGER::GENERATEPROBEDATA::NO_GAMEPLAY_AREA_SET");
@@ -199,9 +129,9 @@ namespace Fog
             _currentState = State.GeneratingProbes;
             EditorApplication.update += UpdateState;
 
-            for (float z = bottomLeftGameplayArea.z + cSphereCastRadius; z < topRightGameplayArea.z; z += FogOfWarManager.cProbeSpacing)
+            for (float z = bottomLeftGameplayArea.z; z < topRightGameplayArea.z; z += FogOfWarManager.cProbeSpacing)
             {
-                for (x = bottomLeftGameplayArea.x + cSphereCastRadius; x < topRightGameplayArea.x; x += FogOfWarManager.cProbeSpacing)
+                for (x = bottomLeftGameplayArea.x; x < topRightGameplayArea.x; x += FogOfWarManager.cProbeSpacing)
                 {
                     rayOrigin.x = x;
                     rayOrigin.z = z;
@@ -209,10 +139,14 @@ namespace Fog
                     Point p;
                     FogOfWarManager.FindNearestPointVector3(rayOrigin, out p);
 
+                    rayOrigin.x = p.x;
+                    rayOrigin.z = p.y;
+
                     if (wData.ContainsKey(p))
                         continue;
 
-                    if (Physics.SphereCast(rayOrigin, cSphereCastRadius, Vector3.down, out hit, _target.probeableLayers.value))
+                    //if (Physics.SphereCast(rayOrigin, cSphereCastRadius, Vector3.down, out hit, 50))
+                    if (Physics.Raycast(rayOrigin, Vector3.down, out hit, 50))
                     {
                         if (((1 << hit.transform.gameObject.layer) & _target.probeableLayers.value) != 0)
                         {
@@ -221,21 +155,132 @@ namespace Fog
                     }
                 }
 
-                yield return null;
+                yield return ((z - bottomLeftGameplayArea.z) / ((topRightGameplayArea.z - bottomLeftGameplayArea.z) + (topRightGameplayArea.x - bottomLeftGameplayArea.x)));
             }
 
             _tempProbeData = new FogOfWarProbeData[wData.Keys.Count];
             wData.Values.CopyTo(_tempProbeData, 0);
 
             if (_tempProbeData == null || _tempProbeData.Length == 0)
-            {
                 Debug.Log("No probe data was created.");
-            }
             else
-            {
                 Debug.Log(string.Format("Created {0} probes", _tempProbeData.Length));
-                FindProbeNeighbours();
-            }            
+
+            FindProbeNeighbours();
+        }
+
+        private IEnumerator<float> FindProbeNeighbours()
+        {
+            if (_currentState != State.GeneratingProbes)
+                yield break;
+
+            _currentState = State.LinkingNeighbours;
+
+            Vector3 temp = Vector3.zero;
+            Vector3 temp2 = Vector3.zero;
+            RaycastHit hit;
+            Ray ray = new Ray();
+
+            //  We use a List here as clearing a BetterList doesn't probably remove
+            //  visible probes from previously checked probes
+            List<int> visibleNodes = new List<int>();
+            int j;
+
+            var testCollider = GameObject.CreatePrimitive(PrimitiveType.Sphere).GetComponent<SphereCollider>();
+            testCollider.gameObject.hideFlags = HideFlags.HideAndDontSave;
+            testCollider.radius = .2f;
+
+            var renderer = testCollider.GetComponent<MeshRenderer>();
+            renderer.enabled = false;
+
+            //  We add a rigidbody as we may check through some triggers 
+            //  which need to block line of sight
+            testCollider.gameObject.AddComponent<Rigidbody>();
+
+            for (int i = 0; i < _tempProbeData.Length; i++)
+            {
+                temp = new Vector3(_tempProbeData[i].x, 20, _tempProbeData[i].z);
+
+                visibleNodes.Clear();
+
+                /*  
+                //  This is basically to just hit the ground to see where we can see from. 
+                //  It's a nice thing to have as we're able to get probes that can look down over edges
+                //  but not be able to look up, sort of like someone being able to look over a cliff.
+
+                //  If you don't want this effect just remove/comment-out this ray cast
+                */
+                if (Physics.Raycast(temp, Vector3.down, out hit))
+                {
+                    temp.y = hit.point.y + .1f;
+                    temp2.y = hit.point.y + .1f;
+
+                    ray.origin = temp;
+
+                    for (j = 0; j < _tempProbeData.Length; j++)
+                    {
+                        //  Skip if it's checking itself
+                        if (_tempProbeData[i].x == _tempProbeData[j].x &&
+                            _tempProbeData[i].z == _tempProbeData[j].z)
+                            continue;
+
+                        temp2.x = _tempProbeData[j].x;
+                        temp2.z = _tempProbeData[j].z;
+
+                        if ((temp2 - temp).sqrMagnitude > cMaxProbeRayDistance * cMaxProbeRayDistance)
+                            continue;
+
+                        /*  
+                        //  The reason we move the collider instead of setting the position to the probe is 
+                        //  so that the cast works properly when we encounter grass. This way, we can't look in
+                        //  (unless inside the grass) but are able to look out
+                        */
+                        testCollider.transform.position = temp2;
+                        ray.direction = (testCollider.transform.position - temp).normalized;
+
+                        if (Physics.Raycast(ray, out hit, cMaxProbeRayDistance, ~_target.ignoredLayers.value))
+                        {
+                            if (hit.collider == testCollider)
+                                visibleNodes.Add(j);
+                        }
+                    }
+
+                    _tempProbeData[i].visibleProbesIndices = visibleNodes.ToArray();
+                }
+
+                yield return ((i * 1.0f) / _tempProbeData.Length);
+            }
+
+            DestroyImmediate(testCollider.gameObject);
+        }
+
+        private void VisionProbeGenerationProgressBar()
+        {
+            if (_currentState == State.Idle || _currentJob == null)
+                return;
+
+            var percent = (_currentJob.Progress*100).ToString("0.0");
+
+            var title = string.Format("{0}%: {1}", percent, _currentState == State.GeneratingProbes ?
+                "Generating Probes" : "Finding Neighbours");
+
+            var info = _currentState == State.GeneratingProbes ?
+                "Probes are current being placed around the gameplay area." :
+                "Depending on the ProbeScaling, this may take some time..";
+
+            var result = EditorUtility.DisplayCancelableProgressBar(title, info, _currentJob.Progress);
+
+            if (result)
+                CancelCurrentJob();
+        }
+
+        private void CancelCurrentJob()
+        {
+            _currentJob.Stop();
+            _currentJob = null;
+            _currentState = State.Idle;
+            EditorUtility.ClearProgressBar();
+            EditorApplication.update -= UpdateState;
         }
 
         private void DrawDebugGUI()
@@ -307,7 +352,7 @@ namespace Fog
                     v.y = 1.0f;
                 }
 
-                Handles.SphereCap(0, v, Quaternion.identity, 0.5f);
+                //Handles.SphereCap(0, v, Quaternion.identity, 0.5f);
                 Handles.RectangleCap(0, v, upQuat, 0.5f);
             }
 
@@ -347,7 +392,7 @@ namespace Fog
             {
                 if (_currentJob.Finished)
                 {
-                    _currentJob = EditorJob.Start(FindProbeNeighbours());
+                    _currentJob = EditorProgressJob.Start(FindProbeNeighbours());
                 }
             }
             else
@@ -356,8 +401,14 @@ namespace Fog
                 {
                     if (_currentJob.Finished)
                     {
-                        _currentState = State.Idle;
                         _dataAsset.SetData(_tempProbeData);
+                        EditorUtility.SetDirty(_dataAsset);
+
+                        AssetDatabase.SaveAssets();
+                        AssetDatabase.Refresh();
+                        CancelCurrentJob();
+                        
+                        Repaint();
                     }
                 }
             }
